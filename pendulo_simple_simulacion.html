@@ -1,0 +1,299 @@
+
+<style>
+  .ctrl-label { font-size: 13px; color: var(--color-text-secondary); min-width: 130px; }
+  .ctrl-val { font-size: 13px; font-weight: 500; min-width: 52px; text-align: right; }
+  .ctrl-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .panel { background: var(--color-background-secondary); border-radius: 8px; padding: 12px 14px; }
+  .eq-box { background: var(--color-background-secondary); border-radius: 8px; padding: 8px 14px; font-family: var(--font-mono); font-size: 13px; color: var(--color-text-secondary); margin-bottom: 10px; text-align: center; }
+  .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+  button { font-size: 13px; padding: 6px 14px; cursor: pointer; border-radius: 6px; border: 0.5px solid var(--color-border-secondary); background: var(--color-background-primary); color: var(--color-text-primary); }
+  button:hover { background: var(--color-background-secondary); }
+  button.active { background: var(--color-background-info); color: var(--color-text-info); border-color: var(--color-border-info); }
+  .stat { font-size: 12px; color: var(--color-text-secondary); }
+  .stat span { font-weight: 500; color: var(--color-text-primary); }
+</style>
+
+<div style="padding: 0.5rem 0;">
+  <div class="eq-box">d²θ/dt² + (g/L)·sin(θ) = 0 &nbsp;|&nbsp; ω = dθ/dt &nbsp;|&nbsp; dω/dt = −(g/L)·sin(θ)</div>
+
+  <div style="display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: start;">
+    <canvas id="canvas" width="420" height="380" style="border-radius: 8px; display: block; width: 100%; background: var(--color-background-secondary);"></canvas>
+
+    <div>
+      <div class="panel">
+        <div style="font-size: 13px; font-weight: 500; margin-bottom: 10px; color: var(--color-text-primary);">Condiciones iniciales</div>
+
+        <div class="ctrl-row">
+          <span class="ctrl-label">Ángulo θ₀</span>
+          <input type="range" id="theta0" min="-170" max="170" value="30" step="1" style="flex:1">
+          <span class="ctrl-val" id="theta0-v">30°</span>
+        </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">Vel. angular ω₀</span>
+          <input type="range" id="omega0" min="-8" max="8" value="0" step="0.1" style="flex:1">
+          <span class="ctrl-val" id="omega0-v">0.0 r/s</span>
+        </div>
+
+        <div style="font-size: 13px; font-weight: 500; margin: 12px 0 10px; color: var(--color-text-primary);">Parámetros</div>
+
+        <div class="ctrl-row">
+          <span class="ctrl-label">Longitud L</span>
+          <input type="range" id="length" min="0.2" max="3" value="1" step="0.05" style="flex:1">
+          <span class="ctrl-val" id="length-v">1.00 m</span>
+        </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">Gravedad g</span>
+          <input type="range" id="gravity" min="1" max="25" value="9.81" step="0.01" style="flex:1">
+          <span class="ctrl-val" id="gravity-v">9.81</span>
+        </div>
+        <div class="ctrl-row">
+          <span class="ctrl-label">Amortiguación b</span>
+          <input type="range" id="damping" min="0" max="2" value="0" step="0.01" style="flex:1">
+          <span class="ctrl-val" id="damping-v">0.00</span>
+        </div>
+
+        <div class="btn-row">
+          <button id="btn-play" class="active">Pausar</button>
+          <button id="btn-reset">Reset</button>
+        </div>
+
+        <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 4px;">
+          <div class="stat">θ actual: <span id="stat-theta">30.0°</span></div>
+          <div class="stat">ω actual: <span id="stat-omega">0.00 r/s</span></div>
+          <div class="stat">Período T: <span id="stat-period">2.01 s</span></div>
+          <div class="stat">Energía E: <span id="stat-energy">--</span></div>
+        </div>
+      </div>
+
+      <div style="margin-top: 8px; font-size: 11px; color: var(--color-text-tertiary); line-height: 1.5; padding: 0 2px;">
+        Integración por Runge-Kutta RK4. Ecuación no lineal exacta (sin aproximación de ángulo pequeño).
+      </div>
+    </div>
+  </div>
+
+  <canvas id="phase-canvas" width="420" height="100" style="margin-top: 10px; border-radius: 8px; display: block; width: 100%; background: var(--color-background-secondary);"></canvas>
+  <div style="font-size: 11px; color: var(--color-text-tertiary); text-align: center; margin-top: 3px;">Espacio de fase: θ vs ω (retrato de fase)</div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const phaseCanvas = document.getElementById('phase-canvas');
+const pctx = phaseCanvas.getContext('2d');
+
+const W = 420, H = 380;
+const PW = 420, PH = 100;
+canvas.width = W; canvas.height = H;
+phaseCanvas.width = PW; phaseCanvas.height = PH;
+
+let g = 9.81, L = 1.0, b = 0.0;
+let theta = 30 * Math.PI / 180;
+let omega = 0.0;
+let theta0 = theta, omega0 = omega;
+let running = true;
+let lastTime = null;
+let trailPoints = [];
+let phasePoints = [];
+
+const MAX_PHASE = 600;
+const MAX_TRAIL = 120;
+const DT_MAX = 0.025;
+
+function getSlider(id) { return parseFloat(document.getElementById(id).value); }
+
+function readParams() {
+  theta0 = getSlider('theta0') * Math.PI / 180;
+  omega0 = getSlider('omega0');
+  L = getSlider('length');
+  g = getSlider('gravity');
+  b = getSlider('damping');
+}
+
+function rk4(th, om, dt) {
+  const f = (t, w) => [-b/1 * w - (g / L) * Math.sin(t)]; // dω/dt
+  const k1th = om;           const k1om = -(b * om) - (g/L)*Math.sin(th);
+  const k2th = om+dt/2*k1om; const k2om = -(b*(om+dt/2*k1om)) - (g/L)*Math.sin(th+dt/2*k1th);
+  const k3th = om+dt/2*k2om; const k3om = -(b*(om+dt/2*k2om)) - (g/L)*Math.sin(th+dt/2*k2th);
+  const k4th = om+dt*k3om;   const k4om = -(b*(om+dt*k3om))   - (g/L)*Math.sin(th+dt*k3th);
+  return {
+    newTheta: th + dt/6*(k1th + 2*k2th + 2*k3th + k4th),
+    newOmega: om + dt/6*(k1om + 2*k2om + 2*k3om + k4om)
+  };
+}
+
+function energy() {
+  const m = 1;
+  const KE = 0.5 * m * (L*omega)**2;
+  const PE = m * g * L * (1 - Math.cos(theta));
+  return (KE + PE).toFixed(3);
+}
+
+function period() {
+  return (2 * Math.PI * Math.sqrt(L/g)).toFixed(2);
+}
+
+function drawPendulum() {
+  ctx.clearRect(0, 0, W, H);
+
+  const cx = W/2, cy = 70;
+  const scale = Math.min(W, H-80) * 0.38 / L;
+  const px = cx + scale * L * Math.sin(theta);
+  const py = cy + scale * L * Math.cos(theta);
+
+  trailPoints.push({x: px, y: py});
+  if (trailPoints.length > MAX_TRAIL) trailPoints.shift();
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const trailColor = isDark ? 'rgba(140,170,255,' : 'rgba(56,120,200,';
+
+  for (let i = 1; i < trailPoints.length; i++) {
+    const alpha = i / trailPoints.length * 0.55;
+    ctx.beginPath();
+    ctx.strokeStyle = trailColor + alpha.toFixed(2) + ')';
+    ctx.lineWidth = 1.5;
+    ctx.moveTo(trailPoints[i-1].x, trailPoints[i-1].y);
+    ctx.lineTo(trailPoints[i].x, trailPoints[i].y);
+    ctx.stroke();
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(px, py);
+  ctx.strokeStyle = isDark ? 'rgba(200,200,200,0.7)' : 'rgba(60,60,60,0.7)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, 5, 0, 2*Math.PI);
+  ctx.fillStyle = isDark ? '#888' : '#666';
+  ctx.fill();
+
+  const speed = Math.abs(omega);
+  const maxSpeed = Math.sqrt(2*g/L) * 1.1;
+  const t_norm = Math.min(speed/maxSpeed, 1);
+  const r = Math.round(56 + t_norm * 199);
+  const gb = Math.round(120 - t_norm * 80);
+  ctx.beginPath();
+  ctx.arc(px, py, 18, 0, 2*Math.PI);
+  ctx.fillStyle = `rgb(${r},${gb},${gb})`;
+  ctx.fill();
+  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const thetaDeg = (theta * 180 / Math.PI).toFixed(1);
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = isDark ? 'rgba(180,180,180,0.6)' : 'rgba(80,80,80,0.6)';
+  ctx.textAlign = 'left';
+  ctx.fillText(`θ = ${thetaDeg}°`, 10, H-10);
+  ctx.textAlign = 'right';
+  ctx.fillText(`ω = ${omega.toFixed(2)} r/s`, W-10, H-10);
+}
+
+function drawPhase() {
+  pctx.clearRect(0, 0, PW, PH);
+
+  const maxTh = Math.PI * 1.05;
+  const maxOm = Math.max(8, Math.abs(omega0) + 1, Math.sqrt(2*g/L) + 1);
+
+  const toX = (th) => PW/2 + (th/maxTh) * (PW/2 - 10);
+  const toY = (om) => PH/2 - (om/maxOm) * (PH/2 - 8);
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+  pctx.strokeStyle = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+  pctx.lineWidth = 0.5;
+  pctx.beginPath(); pctx.moveTo(PW/2, 0); pctx.lineTo(PW/2, PH); pctx.stroke();
+  pctx.beginPath(); pctx.moveTo(0, PH/2); pctx.lineTo(PW, PH/2); pctx.stroke();
+
+  pctx.font = '10px sans-serif';
+  pctx.fillStyle = isDark ? 'rgba(180,180,180,0.4)' : 'rgba(80,80,80,0.4)';
+  pctx.textAlign = 'center';
+  pctx.fillText('θ', PW-6, PH/2-3);
+  pctx.textAlign = 'left';
+  pctx.fillText('ω', PW/2+3, 10);
+
+  if (phasePoints.length > 1) {
+    for (let i = 1; i < phasePoints.length; i++) {
+      const alpha = 0.15 + (i / phasePoints.length) * 0.75;
+      const hue = isDark ? '210,170,255,' : '56,110,200,';
+      pctx.beginPath();
+      pctx.strokeStyle = `rgba(${hue}${alpha.toFixed(2)})`;
+      pctx.lineWidth = 1.2;
+      pctx.moveTo(toX(phasePoints[i-1].t), toY(phasePoints[i-1].o));
+      pctx.lineTo(toX(phasePoints[i].t), toY(phasePoints[i].o));
+      pctx.stroke();
+    }
+  }
+
+  pctx.beginPath();
+  pctx.arc(toX(theta), toY(omega), 4, 0, 2*Math.PI);
+  pctx.fillStyle = isDark ? '#aac4ff' : '#2255bb';
+  pctx.fill();
+}
+
+function updateStats() {
+  document.getElementById('stat-theta').textContent = (theta * 180/Math.PI).toFixed(1) + '°';
+  document.getElementById('stat-omega').textContent = omega.toFixed(2) + ' r/s';
+  document.getElementById('stat-period').textContent = period() + ' s';
+  document.getElementById('stat-energy').textContent = energy() + ' J/kg';
+}
+
+function loop(ts) {
+  if (lastTime === null) lastTime = ts;
+  const elapsed = Math.min((ts - lastTime) / 1000, DT_MAX * 4);
+  lastTime = ts;
+
+  if (running) {
+    const steps = 4;
+    const dt = elapsed / steps;
+    for (let i = 0; i < steps; i++) {
+      const {newTheta, newOmega} = rk4(theta, omega, dt);
+      theta = newTheta;
+      omega = newOmega;
+    }
+    phasePoints.push({t: theta, o: omega});
+    if (phasePoints.length > MAX_PHASE) phasePoints.shift();
+  }
+
+  drawPendulum();
+  drawPhase();
+  updateStats();
+  requestAnimationFrame(loop);
+}
+
+function resetSim() {
+  readParams();
+  theta = theta0;
+  omega = omega0;
+  trailPoints = [];
+  phasePoints = [];
+  lastTime = null;
+}
+
+['theta0','omega0','length','gravity','damping'].forEach(id => {
+  const el = document.getElementById(id);
+  const valEl = document.getElementById(id+'-v');
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    if (id === 'theta0') valEl.textContent = v.toFixed(0) + '°';
+    else if (id === 'omega0') valEl.textContent = v.toFixed(1) + ' r/s';
+    else if (id === 'length') valEl.textContent = v.toFixed(2) + ' m';
+    else if (id === 'gravity') valEl.textContent = v.toFixed(2);
+    else if (id === 'damping') valEl.textContent = v.toFixed(2);
+    resetSim();
+  });
+});
+
+document.getElementById('btn-play').addEventListener('click', function() {
+  running = !running;
+  this.textContent = running ? 'Pausar' : 'Reanudar';
+  this.classList.toggle('active', running);
+  if (running) lastTime = null;
+});
+
+document.getElementById('btn-reset').addEventListener('click', resetSim);
+
+readParams();
+requestAnimationFrame(loop);
+</script>
